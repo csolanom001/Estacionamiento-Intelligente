@@ -1,0 +1,15 @@
+# Archivos de caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Recortes temporales de diagnóstico de imágenes
+crop_*.jpg
+
+# Archivos comprimidos o documentos externos ajenos al repositorio
+plataforma_web.zip
+GAO_Cost_Estimating_Guide_SUBRAYADO.pdf
+La_Guia_de_Scrum_SUBRAYADO.pdf

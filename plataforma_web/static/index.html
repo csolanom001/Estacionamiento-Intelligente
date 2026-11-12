@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sistema de Estacionamiento Inteligente con ESP32 | UAEMEX</title>
+  <link rel="manifest" href="/static/manifest.json" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #0b1120;
+      color: #e2e8f0;
+    }
+    .font-lcd {
+      font-family: 'Share Tech Mono', monospace;
+    }
+    /* Estilo realista de pantalla LCD 16x2 I2C retroiluminada */
+    .lcd-screen {
+      background: linear-gradient(180deg, #84cc16 0%, #65a30d 100%);
+      color: #0f1f04;
+      box-shadow: inset 0 3px 8px rgba(0, 0, 0, 0.45), 0 0 15px rgba(132, 204, 22, 0.25);
+      border: 6px solid #1e293b;
+      letter-spacing: 0.12em;
+    }
+    /* Animación suave del brazo de la pluma (Servomotor SG90) */
+    .gate-arm {
+      transform-origin: 18px 50%;
+      transition: transform 0.65s cubic-bezier(0.34, 1.56, 0.64, 1);
+    }
+    .gate-closed {
+      transform: rotate(0deg);
+    }
+    .gate-open {
+      transform: rotate(-88deg);
+    }
+    /* Brillo de LEDs GPIO 13 y GPIO 12 */
+    .led-green-on {
+      background-color: #22c55e;
+      box-shadow: 0 0 18px #22c55e, 0 0 32px #16a34a;
+    }
+    .led-red-on {
+      background-color: #ef4444;
+      box-shadow: 0 0 18px #ef4444, 0 0 32px #dc2626;
+    }
+    /* Contenedor de simulación de vista móvil */
+    .mobile-frame {
+      max-width: 430px;
+      margin: 0 auto;
+      border: 8px solid #1e293b;
+      border-radius: 36px;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.75);
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col">
+
+  <!-- BARRA SUPERIOR -->
+  <header class="bg-slate-900/90 backdrop-blur border-b border-slate-800 sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-bold text-lg">
+          P
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="font-bold text-white text-base sm:text-lg tracking-tight">
+              Estacionamiento Inteligente ESP32
+            </h1>
+            <span class="px-2 py-0.5 text-xs font-semibold rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+              WROOM-32D • Core 3.x
+            </span>
+          </div>
+          <p class="text-xs text-slate-400">
+            Control RFID RC522 (VSPI 3.3V) • Ultrasónico HC-SR04 • Servo SG90 • LCD 16x2 I2C
+          </p>
+        </div>
+      </div>
+
+      <!-- Controles rápidos superiores -->
+      <div class="flex items-center gap-2 sm:gap-3">
+        <!-- Estado API -->
+        <div id="api-status-badge" class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-800/90 border border-slate-700 text-xs">
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span class="text-slate-300 font-medium">API & SQLite Conectados</span>
+        </div>
+
+        <!-- Audio Buzzer Toggle -->
+        <button id="btn-audio" onclick="toggleAudio()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-medium text-slate-200 flex items-center gap-1.5 transition">
+          <span id="audio-icon">🔊</span>
+          <span id="audio-label" class="hidden sm:inline">Buzzer Web: ON</span>
+        </button>
+
+        <!-- Selector Vista Web / App Móvil -->
+        <button id="btn-vista-movil" onclick="toggleVistaMovil()" class="px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 text-xs font-semibold text-indigo-300 flex items-center gap-1.5 transition">
+          <span>📱</span>
+          <span id="label-vista-movil">Vista App Móvil</span>
+        </button>
+
+        <!-- Enlace Swagger API Docs -->
+        <a href="/docs" target="_blank" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-medium text-emerald-400 hidden md:flex items-center gap-1 transition">
+          <span>⚡ API REST (/docs)</span>
+        </a>
+      </div>
+    </div>
+
+    <!-- NAVEGACIÓN DE PESTAÑAS -->
+    <div class="max-w-7xl mx-auto px-4 flex gap-1 overflow-x-auto border-t border-slate-800/60 pt-1">
+      <button onclick="cambiarTab('monitoreo')" id="tab-btn-monitoreo" class="tab-btn px-4 py-2.5 text-xs sm:text-sm font-semibold border-b-2 border-emerald-400 text-emerald-400 whitespace-nowrap">
+        📡 Monitoreo en Vivo y Simulador ESP32
+      </button>
+      <button onclick="cambiarTab('usuarios')" id="tab-btn-usuarios" class="tab-btn px-4 py-2.5 text-xs sm:text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap">
+        🪪 Usuarios, Credenciales RFID y Vehículos
+      </button>
+      <button onclick="cambiarTab('bitacora')" id="tab-btn-bitacora" class="tab-btn px-4 py-2.5 text-xs sm:text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap">
+        📋 Bitácora de Accesos y Reportes
+      </button>
+      <button onclick="cambiarTab('arquitectura')" id="tab-btn-arquitectura" class="tab-btn px-4 py-2.5 text-xs sm:text-sm font-medium border-b-2 border-transparent text-slate-400 hover:text-slate-200 whitespace-nowrap">
+        🔌 Pinout ESP32 y Conexión Wi-Fi REST
+      </button>
+    </div>
+  </header>
+
+  <!-- CONTENEDOR PRINCIPAL -->
+  <main id="main-wrapper" class="flex-1 max-w-7xl w-full mx-auto px-4 py-6 transition-all">
+
+    <!-- TARJETAS DE MÉTRICAS EN TIEMPO REAL -->
+    <section class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
+      <!-- Disponibilidad Aforo -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span>LUGARES DISPONIBLES</span>
+          <span class="text-emerald-400 font-semibold" id="kpi-porcentaje">75% Libre</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span id="kpi-libres" class="text-2xl sm:text-3xl font-bold text-white">3</span>
+          <span class="text-sm text-slate-400">/ <span id="kpi-total">4</span> cajones</span>
+        </div>
+        <p class="text-xs text-slate-500 mt-1">Monitoreo de aforo en tiempo real</p>
+      </div>
+
+      <!-- Estado Sensor HC-SR04 (Cajón Prototipo A-01) -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span>CAJÓN ESP32 (HC-SR04)</span>
+          <span class="font-mono text-xs text-sky-400">GPIO 32/35</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="kpi-cajon-estado" class="text-xl sm:text-2xl font-bold text-emerald-400">LIBRE</span>
+          <span id="kpi-distancia" class="px-2 py-0.5 rounded bg-slate-800 text-xs font-mono text-slate-300">42.0 cm</span>
+        </div>
+        <p class="text-xs text-slate-500 mt-1">Umbral ocupación: &le; 10.0 cm</p>
+      </div>
+
+      <!-- Estado Barrera SG90 -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span>BARRERA SERVO SG90</span>
+          <span class="font-mono text-xs text-amber-400">GPIO 4 (6V Ext)</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span id="kpi-pluma-estado" class="text-xl sm:text-2xl font-bold text-rose-400">CERRADA</span>
+          <span id="kpi-pluma-angulo" class="px-2 py-0.5 rounded bg-slate-800 text-xs font-mono text-slate-300">0°</span>
+        </div>
+        <p class="text-xs text-slate-500 mt-1">Apertura automática 90° por 3s</p>
+      </div>
+
+      <!-- Credenciales y Eventos -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span>TARJETAS RFID ACTIVAS</span>
+          <span class="text-indigo-400 font-semibold" id="kpi-eventos-total">0 eventos</span>
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span id="kpi-credenciales" class="text-2xl sm:text-3xl font-bold text-white">4</span>
+          <span class="text-xs text-slate-400">UIDs autorizados</span>
+        </div>
+        <p class="text-xs text-slate-500 mt-1">Base de datos SQLite sincronizada</p>
+      </div>
+    </section>
+
+    <!-- =============================================================== -->
+    <!-- PESTAÑA 1: MONITOREO EN VIVO Y GEMELO DIGITAL ESP32             -->
+    <!-- =============================================================== -->
+    <section id="tab-monitoreo" class="space-y-6">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+        <!-- COLUMNA IZQUIERDA: GEMELO DIGITAL DEL HARDWARE ESP32 (7 cols) -->
+        <div class="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5">
+          <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+            <div>
+              <h2 class="text-base font-bold text-white flex items-center gap-2">
+                <span>🎛️ Gemelo Digital de Periféricos ESP32</span>
+              </h2>
+              <p class="text-xs text-slate-400">
+                Estado sincronizado con el LCD 16x2 I2C, LEDs (GPIO 12/13), Buzzer (GPIO 2), Servo SG90 (GPIO 4) y HC-SR04
+              </p>
+            </div>
+            <span class="px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-medium">
+              Respaldo Serial Activo ('1' / '0')
+            </span>
+          </div>
+
+          <!-- DISPLAY LCD 16x2 I2C + INDICADORES LED Y BUZZER -->
+          <div class="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
+            <!-- Pantalla LCD 16x2 (I2C 0x27, SDA:21, SCL:22) -->
+            <div class="md:col-span-7">
+              <div class="text-xs text-slate-400 mb-1.5 flex justify-between">
+                <span>DISPLAY LCD 16x2 I2C (0x27)</span>
+                <span class="font-mono text-slate-500">SDA:21 | SCL:22</span>
+              </div>
+              <div class="lcd-screen rounded-xl p-4 font-lcd text-xl sm:text-2xl leading-snug select-none">
+                <div id="lcd-line-1" class="truncate">Lugar: LIBRE    </div>
+                <div id="lcd-line-2" class="truncate">Acerque tarjeta </div>
+              </div>
+            </div>
+
+            <!-- Indicadores físicos: LED Verde (GPIO 13), LED Rojo (GPIO 12), Buzzer (GPIO 2) -->
+            <div class="md:col-span-5 bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-3">
+              <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Indicadores GPIO</div>
+              <div class="flex items-center justify-around">
+                <!-- LED Verde -->
+                <div class="flex flex-col items-center gap-1.5">
+                  <div id="hw-led-verde" class="w-7 h-7 rounded-full bg-emerald-950 border-2 border-emerald-700/50 transition-all"></div>
+                  <span class="text-[11px] font-medium text-slate-300">LED Verde</span>
+                  <span class="text-[10px] font-mono text-slate-500">GPIO 13</span>
+                </div>
+                <!-- LED Rojo -->
+                <div class="flex flex-col items-center gap-1.5">
+                  <div id="hw-led-rojo" class="w-7 h-7 rounded-full bg-rose-950 border-2 border-rose-700/50 transition-all"></div>
+                  <span class="text-[11px] font-medium text-slate-300">LED Rojo</span>
+                  <span class="text-[10px] font-mono text-slate-500">GPIO 12</span>
+                </div>
+                <!-- Buzzer LEDC -->
+                <div class="flex flex-col items-center gap-1.5">
+                  <div id="hw-buzzer" class="w-7 h-7 rounded-full bg-slate-800 border-2 border-slate-600 flex items-center justify-center text-xs transition-all">
+                    🔔
+                  </div>
+                  <span class="text-[11px] font-medium text-slate-300">Buzzer PWM</span>
+                  <span class="text-[10px] font-mono text-slate-500">GPIO 2</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ANIMACIÓN DE LA PLUMA (SERVO SG90) + CONTROL SENSOR ULTRASÓNICO HC-SR04 -->
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <!-- Visualización de la Pluma SG90 -->
+            <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-semibold text-slate-300">Barrera Servomotor SG90</span>
+                <span id="servo-badge" class="px-2 py-0.5 rounded text-[11px] font-mono bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                  0° CERRADA
+                </span>
+              </div>
+
+              <!-- Dibujo interactivo de la pluma -->
+              <div class="relative h-32 flex items-end justify-start pl-6 pb-3 overflow-hidden">
+                <!-- Base de la pluma -->
+                <div class="w-9 h-14 bg-amber-500 rounded-t-lg border-2 border-amber-300 z-10 flex flex-col items-center justify-center shadow-lg">
+                  <div class="w-3.5 h-3.5 rounded-full bg-slate-900 border border-white"></div>
+                  <span class="text-[9px] font-bold text-slate-950 mt-1">SG90</span>
+                </div>
+                <!-- Brazo móvil -->
+                <div id="gate-arm-el" class="gate-arm gate-closed absolute left-8 bottom-11 w-48 h-3.5 bg-gradient-to-r from-rose-500 via-white to-rose-500 rounded-r-full border border-rose-700 shadow-md"></div>
+              </div>
+
+              <div class="flex gap-2 mt-2">
+                <button onclick="controlarPlumaManual('ABRIR')" class="flex-1 py-1.5 px-3 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 text-xs font-semibold transition">
+                  ⬆️ Subir Pluma (90°)
+                </button>
+                <button onclick="controlarPlumaManual('CERRAR')" class="flex-1 py-1.5 px-3 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-300 text-xs font-semibold transition">
+                  ⬇️ Bajar Pluma (0°)
+                </button>
+              </div>
+            </div>
+
+            <!-- Control y Lectura en Vivo del Sensor Ultrasónico HC-SR04 -->
+            <div class="bg-slate-950/70 border border-slate-800 rounded-xl p-4 flex flex-col justify-between">
+              <div>
+                <div class="flex items-center justify-between mb-1">
+                  <span class="text-xs font-semibold text-slate-300">Sensor Ultrasónico HC-SR04</span>
+                  <span class="text-[11px] font-mono text-sky-400">Trig:32 | Echo:35</span>
+                </div>
+                <p class="text-xs text-slate-400 mb-3">
+                  Detecta vehículo cuando la distancia es <strong>&le; 10 cm</strong>. Ajusta el sensor para simular un auto estacionándose en el cajón físico:
+                </p>
+
+                <div class="bg-slate-900 p-3 rounded-lg border border-slate-800 mb-3">
+                  <div class="flex justify-between text-xs mb-1.5">
+                    <span class="text-slate-400">Distancia al objeto:</span>
+                    <span id="slider-distancia-val" class="font-mono font-bold text-sky-400 text-sm">42.0 cm</span>
+                  </div>
+                  <input
+                    id="slider-hc-sr04"
+                    type="range"
+                    min="2"
+                    max="120"
+                    step="0.5"
+                    value="42"
+                    oninput="actualizarPreviewSlider(this.value)"
+                    onchange="enviarTelemetriaSimulada(this.value)"
+                    class="w-full accent-emerald-500 cursor-pointer"
+                  />
+                  <div class="flex justify-between text-[10px] text-slate-500 mt-1">
+                    <span class="text-rose-400 font-semibold">2 cm (Auto en cajón &le;10cm)</span>
+                    <span>Umbral: 10 cm</span>
+                    <span class="text-emerald-400">120 cm (Libre)</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex gap-2">
+                <button onclick="setDistanciaRapida(6.0)" class="flex-1 py-1.5 px-2.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs font-semibold transition">
+                  🚗 Ocupar Cajón (6 cm)
+                </button>
+                <button onclick="setDistanciaRapida(45.0)" class="flex-1 py-1.5 px-2.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 text-xs font-semibold transition">
+                  🟢 Liberar Cajón (45 cm)
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- MAPA DE CAJONES DE ESTACIONAMIENTO -->
+          <div>
+            <div class="flex items-center justify-between mb-2.5">
+              <h3 class="text-xs font-bold uppercase tracking-wider text-slate-400">
+                Mapa de Cajones en Tiempo Real (Haz clic en cualquier cajón para conmutar su estado)
+              </h3>
+            </div>
+            <div id="grid-cajones" class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <!-- Se renderiza dinámicamente -->
+            </div>
+          </div>
+        </div>
+
+        <!-- COLUMNA DERECHA: SIMULADOR DE ACCESO RFID RC522 + CONSOLA SERIAL (5 cols) -->
+        <div class="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-4">
+          <div>
+            <div class="border-b border-slate-800 pb-3 mb-4">
+              <h2 class="text-base font-bold text-white flex items-center gap-2">
+                <span>💳 Lector RFID RC522 y Respaldo Serial</span>
+              </h2>
+              <p class="text-xs text-slate-400 mt-0.5">
+                Prueba la lógica de control presentando una tarjeta RFID o enviando los comandos de respaldo por consola Serial (<code>'1'</code> autoriza, <code>'0'</code> deniega).
+              </p>
+            </div>
+
+            <!-- MODO RESPALDO SERIAL ('1' y '0') -->
+            <div class="bg-slate-950/90 border border-amber-500/30 rounded-xl p-3.5 mb-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-bold text-amber-300 uppercase tracking-wider">
+                  ⚡ Modo Respaldo Consola Serial (115200 baud)
+                </span>
+                <span class="text-[11px] text-slate-400">Activo sin RC522 físico</span>
+              </div>
+              <div class="grid grid-cols-2 gap-2.5">
+                <button onclick="simularAcceso('1', 'SERIAL_MONITOR')" class="py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-lg shadow-emerald-900/30 flex items-center justify-center gap-1.5 transition">
+                  <span>✅ Enviar '1' (Autorizar)</span>
+                </button>
+                <button onclick="simularAcceso('0', 'SERIAL_MONITOR')" class="py-2.5 px-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs shadow-lg shadow-rose-900/30 flex items-center justify-center gap-1.5 transition">
+                  <span>⛔ Enviar '0' (Denegar)</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- TARJETAS RFID RÁPIDAS (UIDs del Firmware y BD) -->
+            <div class="space-y-2 mb-4">
+              <label class="text-xs font-semibold text-slate-300 block">
+                Acercar Tarjeta / Tag al Lector RC522 (VSPI 3.3V):
+              </label>
+              <div id="botones-tarjetas-rapidas" class="grid grid-cols-1 gap-2 max-h-48 overflow-y-auto pr-1">
+                <!-- Se llena con las tarjetas de la BD + 1 tarjeta no autorizada -->
+              </div>
+            </div>
+
+            <!-- LECTURA MANUAL DE UID -->
+            <div class="flex gap-2">
+              <input
+                id="input-uid-manual"
+                type="text"
+                placeholder="Ingresar UID HEX (ej. 83 CF 7A 28 o FF 00 11 22)"
+                class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-emerald-500"
+              />
+              <button onclick="probarUidManual()" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition">
+                Leer UID
+              </button>
+            </div>
+          </div>
+
+          <!-- CONSOLA MONITOR SERIAL DEL ESP32 -->
+          <div>
+            <div class="flex items-center justify-between text-xs text-slate-400 mb-1.5">
+              <span class="font-mono font-semibold text-emerald-400">>_ Monitor Serial ESP32 (115200 baudios)</span>
+              <button onclick="limpiarConsolaSerial()" class="text-[11px] text-slate-400 hover:text-white">Limpiar</button>
+            </div>
+            <div id="serial-console" class="bg-slate-950 border border-slate-800 rounded-xl p-3 font-mono text-xs text-emerald-400 h-44 overflow-y-auto space-y-1">
+              <div class="text-slate-500">=======================================</div>
+              <div class="text-slate-300"> ACCESO Y MONITOREO DE ESTACIONAMIENTO</div>
+              <div class="text-slate-500">=======================================</div>
+              <div>[SISTEMA] LCD 16x2 I2C inicializado en 0x27 (SDA:21, SCL:22)</div>
+              <div>[SISTEMA] HC-SR04 activo (Trig:32, Echo:35) - Umbral: 10 cm</div>
+              <div>[SISTEMA] Listo para recibir tarjetas RC522 (3.3V) o comando Serial ('1'/'0')...</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- =============================================================== -->
+    <!-- PESTAÑA 2: REGISTRO DE USUARIOS, CREDENCIALES RFID Y VEHÍCULOS  -->
+    <!-- =============================================================== -->
+    <section id="tab-usuarios" class="hidden space-y-6">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+        <!-- FORMULARIO DE ALTA (4 cols) -->
+        <div class="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-2xl p-5">
+          <h2 class="text-base font-bold text-white mb-1">
+            ➕ Registrar Usuario, Vehículo y Tag RFID
+          </h2>
+          <p class="text-xs text-slate-400 mb-4">
+            Vincula el UID hexadecimal de la tarjeta MIFARE / llavero RFID con el docente o administrativo y las placas de su vehículo.
+          </p>
+
+          <form id="form-registro" onsubmit="guardarNuevoRegistro(event)" class="space-y-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-300 mb-1">Nombre completo del Usuario *</label>
+              <input id="reg-nombre" type="text" required placeholder="Ej. Dr. Fernando Vázquez" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none" />
+            </div>
+
+            <div class="grid grid-cols-2 gap-2.5">
+              <div>
+                <label class="block text-xs font-medium text-slate-300 mb-1">Rol / Categoría *</label>
+                <select id="reg-rol" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none">
+                  <option value="Docente Tiempo Completo">Docente Tiempo Completo</option>
+                  <option value="Investigador / Docente">Investigador / Docente</option>
+                  <option value="Personal Administrativo">Personal Administrativo</option>
+                  <option value="Coordinador Académico">Coordinador Académico</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-300 mb-1">Departamento</label>
+                <input id="reg-depto" type="text" value="Facultad de Ingeniería" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none" />
+              </div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2.5">
+              <div>
+                <label class="block text-xs font-medium text-slate-300 mb-1">Correo Institucional</label>
+                <input id="reg-correo" type="email" placeholder="usuario@uaemex.mx" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none" />
+              </div>
+              <div>
+                <label class="block text-xs font-medium text-slate-300 mb-1">Teléfono</label>
+                <input id="reg-telefono" type="text" placeholder="722-000-0000" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none" />
+              </div>
+            </div>
+
+            <div class="border-t border-slate-800 pt-3">
+              <div class="text-xs font-bold text-emerald-400 uppercase tracking-wider mb-2">🚗 Datos del Vehículo</div>
+              <div class="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label class="block text-xs font-medium text-slate-300 mb-1">Placas *</label>
+                  <input id="reg-placas" type="text" required placeholder="Ej. LMN-452-A" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono uppercase text-white focus:border-emerald-500 focus:outline-none" />
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-300 mb-1">Marca *</label>
+                  <input id="reg-marca" type="text" required placeholder="Ej. Honda" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none" />
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-300 mb-1">Modelo *</label>
+                  <input id="reg-modelo" type="text" required placeholder="Ej. CR-V" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none" />
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-300 mb-1">Color *</label>
+                  <input id="reg-color" type="text" required placeholder="Ej. Plata" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none" />
+                </div>
+              </div>
+            </div>
+
+            <div class="border-t border-slate-800 pt-3">
+              <div class="flex items-center justify-between mb-1">
+                <label class="text-xs font-bold text-indigo-400 uppercase tracking-wider">🔑 Credencial RFID (RC522) *</label>
+                <button type="button" onclick="generarUidAleatorio()" class="text-[11px] text-indigo-300 hover:underline">
+                  🎲 Generar UID 4-Bytes
+                </button>
+              </div>
+              <input id="reg-uid" type="text" required placeholder="Ej. C4 8A 19 0E" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono uppercase text-white focus:border-emerald-500 focus:outline-none mb-2" />
+              <input id="reg-alias" type="text" value="Tarjeta Blanca MIFARE 13.56MHz" placeholder="Tipo o alias del tag" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500 focus:outline-none" />
+            </div>
+
+            <button type="submit" class="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs shadow-lg shadow-emerald-900/40 transition">
+              💾 Guardar en Base de Datos y Autorizar UID
+            </button>
+          </form>
+        </div>
+
+        <!-- TABLA DE USUARIOS, VEHÍCULOS Y CREDENCIALES (8 cols) -->
+        <div class="lg:col-span-8 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col">
+          <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div>
+              <h2 class="text-base font-bold text-white">
+                🗂️ Padrón de Usuarios, Vehículos y Credenciales RFID
+              </h2>
+              <p class="text-xs text-slate-400">
+                Incluye las tarjetas grabadas en el firmware del ESP32 (<code>83 CF 7A 28</code>, <code>A3 6C 9F 14</code>, <code>09 B8 95 80</code>) y nuevos registros.
+              </p>
+            </div>
+            <input
+              id="buscador-usuarios"
+              type="text"
+              oninput="filtrarTablaUsuarios()"
+              placeholder="🔍 Buscar por nombre, UID o placas..."
+              class="bg-slate-950 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-500 w-64"
+            />
+          </div>
+
+          <div class="overflow-x-auto flex-1">
+            <table class="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr class="border-b border-slate-800 text-slate-400 uppercase text-[11px]">
+                  <th class="py-2.5 px-3">UID RFID</th>
+                  <th class="py-2.5 px-3">Usuario / Rol</th>
+                  <th class="py-2.5 px-3">Vehículo y Placas</th>
+                  <th class="py-2.5 px-3">Estado</th>
+                  <th class="py-2.5 px-3 text-right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="tabla-usuarios-body" class="divide-y divide-slate-800/70">
+                <!-- Se llena dinámicamente -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- =============================================================== -->
+    <!-- PESTAÑA 3: BITÁCORA DE ACCESOS Y EXPORTACIÓN                    -->
+    <!-- =============================================================== -->
+    <section id="tab-bitacora" class="hidden space-y-6">
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <div>
+            <h2 class="text-base font-bold text-white">
+              📋 Bitácora Histórica de Accesos y Eventos del Sensor
+            </h2>
+            <p class="text-xs text-slate-400">
+              Registro auditable en tiempo real con fecha/hora, UID leído, vehículo, distancia ultrasónica HC-SR04 y motivo de decisión.
+            </p>
+          </div>
+          <div class="flex items-center gap-2">
+            <a href="/api/bitacora/exportar" class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition">
+              <span>📥 Exportar CSV (Excel)</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Resumen estadístico de bitácora -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3">
+            <span class="text-[11px] text-slate-400">Total de Eventos</span>
+            <div id="stat-total" class="text-xl font-bold text-white mt-0.5">0</div>
+          </div>
+          <div class="bg-slate-950/80 border border-emerald-500/30 rounded-xl p-3">
+            <span class="text-[11px] text-emerald-400">Accesos Concedidos</span>
+            <div id="stat-autorizados" class="text-xl font-bold text-emerald-400 mt-0.5">0</div>
+          </div>
+          <div class="bg-slate-950/80 border border-amber-500/30 rounded-xl p-3">
+            <span class="text-[11px] text-amber-400">Rechazos por Cajón Ocupado</span>
+            <div id="stat-ocupado" class="text-xl font-bold text-amber-400 mt-0.5">0</div>
+          </div>
+          <div class="bg-slate-950/80 border border-rose-500/30 rounded-xl p-3">
+            <span class="text-[11px] text-rose-400">Rechazos por UID No Autorizado</span>
+            <div id="stat-rechazos-uid" class="text-xl font-bold text-rose-400 mt-0.5">0</div>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left border-collapse text-xs">
+            <thead>
+              <tr class="border-b border-slate-800 text-slate-400 uppercase text-[11px]">
+                <th class="py-2.5 px-3">Fecha y Hora</th>
+                <th class="py-2.5 px-3">UID / Comando</th>
+                <th class="py-2.5 px-3">Usuario</th>
+                <th class="py-2.5 px-3">Placas / Vehículo</th>
+                <th class="py-2.5 px-3">Sensor HC-SR04</th>
+                <th class="py-2.5 px-3">Resultado</th>
+                <th class="py-2.5 px-3">Detalle de Lógica de Control</th>
+              </tr>
+            </thead>
+            <tbody id="tabla-bitacora-body" class="divide-y divide-slate-800/70">
+              <!-- Se llena dinámicamente -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- =============================================================== -->
+    <!-- PESTAÑA 4: ARQUITECTURA DE CONEXIÓN ESP32 Y PINOUT HARDWARE     -->
+    <!-- =============================================================== -->
+    <section id="tab-arquitectura" class="hidden space-y-6">
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <!-- Pinout Hardware ESP32 WROOM-32D -->
+        <div class="lg:col-span-6 bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+          <h2 class="text-base font-bold text-white">
+            🔌 Mapa de Pines (ESP32 WROOM-32D) y Protección 3.3V
+          </h2>
+          <div class="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 leading-relaxed">
+            <strong>⚠️ Nota Crítica de Hardware (Lector RFID RC522):</strong> El módulo RC522 debe alimentarse <strong>exclusivamente a 3.3V</strong>. El firmware incluye respaldo por Consola Serial (<code>'1'</code> autoriza, <code>'0'</code> deniega) y conexión Wi-Fi HTTP lista para operar tanto con el nuevo módulo RC522 como por Serial.
+          </div>
+
+          <div class="overflow-x-auto">
+            <table class="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr class="border-b border-slate-800 text-slate-400 uppercase text-[11px]">
+                  <th class="py-2 px-2.5">Periférico</th>
+                  <th class="py-2 px-2.5">Pin / Señal</th>
+                  <th class="py-2 px-2.5">GPIO ESP32</th>
+                  <th class="py-2 px-2.5">Alimentación / Notas</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-slate-800/70 font-mono text-[11px]">
+                <tr>
+                  <td class="py-2 px-2.5 font-sans font-semibold text-emerald-400">RFID RC522 (VSPI)</td>
+                  <td class="py-2 px-2.5">SDA(SS) / SCK / MOSI / MISO / RST</td>
+                  <td class="py-2 px-2.5">5 / 18 / 23 / 19 / 27</td>
+                  <td class="py-2 px-2.5 text-amber-300 font-sans">3.3V Estricto (No 5V)</td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2.5 font-sans font-semibold text-sky-400">Sensor HC-SR04</td>
+                  <td class="py-2 px-2.5">TRIG / ECHO</td>
+                  <td class="py-2 px-2.5">GPIO 32 / GPIO 35</td>
+                  <td class="py-2 px-2.5 font-sans">Umbral ocupado &le; 10 cm</td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2.5 font-sans font-semibold text-amber-400">Servomotor SG90</td>
+                  <td class="py-2 px-2.5">PWM Pulso Nativo</td>
+                  <td class="py-2 px-2.5">GPIO 4</td>
+                  <td class="py-2 px-2.5 font-sans">4xAA (6V Ext) + GND común</td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2.5 font-sans font-semibold text-lime-400">Display LCD 16x2</td>
+                  <td class="py-2 px-2.5">I2C SDA / SCL (0x27)</td>
+                  <td class="py-2 px-2.5">GPIO 21 / GPIO 22</td>
+                  <td class="py-2 px-2.5 font-sans">Muestra estado en vivo</td>
+                </tr>
+                <tr>
+                  <td class="py-2 px-2.5 font-sans font-semibold text-indigo-400">Indicadores</td>
+                  <td class="py-2 px-2.5">Buzzer / LED Verde / LED Rojo</td>
+                  <td class="py-2 px-2.5">GPIO 2 / 13 / 12</td>
+                  <td class="py-2 px-2.5 font-sans">LEDC Core 3.x (`ledcWriteTone`)</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Endpoints REST para el ESP32 -->
+        <div class="lg:col-span-6 bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
+          <h2 class="text-base font-bold text-white">
+            🌐 Endpoints API REST para el Firmware ESP32 (`pluma_wifi.ino`)
+          </h2>
+          <p class="text-xs text-slate-400">
+            El firmware complementario <code>pluma_wifi/pluma_wifi.ino</code> se conecta por Wi-Fi a este servidor usando <code>HTTPClient</code> y sincroniza validaciones, lecturas del HC-SR04 y comandos remotos:
+          </p>
+
+          <div class="space-y-3 text-xs">
+            <div class="bg-slate-950 border border-slate-800 rounded-xl p-3">
+              <div class="flex items-center gap-2 font-mono font-bold text-emerald-400 mb-1">
+                <span class="px-2 py-0.5 rounded bg-emerald-500/20 text-[10px]">POST</span>
+                <span>/api/esp32/validar-acceso</span>
+              </div>
+              <p class="text-slate-400 mb-1.5">Valida un UID leído por RC522 o comando Serial (<code>'1'</code>/<code>'0'</code>) junto con la distancia del HC-SR04:</p>
+              <pre class="bg-slate-900 p-2 rounded text-[11px] font-mono text-slate-300 overflow-x-auto">{"uid": "83 CF 7A 28", "distancia_cm": 42.0, "origen": "RFID_RC522"}</pre>
+            </div>
+
+            <div class="bg-slate-950 border border-slate-800 rounded-xl p-3">
+              <div class="flex items-center gap-2 font-mono font-bold text-sky-400 mb-1">
+                <span class="px-2 py-0.5 rounded bg-sky-500/20 text-[10px]">POST</span>
+                <span>/api/esp32/telemetria</span>
+              </div>
+              <p class="text-slate-400 mb-1.5">Reporta en tiempo real la distancia del sensor ultrasónico HC-SR04 y recibe comandos de apertura remota:</p>
+              <pre class="bg-slate-900 p-2 rounded text-[11px] font-mono text-slate-300 overflow-x-auto">{"distancia_cm": 6.5, "pluma_estado": "CERRADA"}</pre>
+            </div>
+
+            <div class="bg-slate-950 border border-slate-800 rounded-xl p-3">
+              <div class="flex items-center gap-2 font-mono font-bold text-indigo-400 mb-1">
+                <span class="px-2 py-0.5 rounded bg-indigo-500/20 text-[10px]">GET</span>
+                <span>/api/esp32/uids-autorizados</span>
+              </div>
+              <p class="text-slate-400">Descarga la lista de UIDs activos desde SQLite para respaldo offline en la memoria del ESP32.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- NOTIFICACIÓN TOAST FLOTANTE -->
+  <div id="toast-notification" class="fixed bottom-5 right-5 z-50 hidden max-w-sm bg-slate-900 border border-slate-700 text-white px-4 py-3 rounded-2xl shadow-2xl flex items-start gap-3">
+    <span id="toast-icon" class="text-lg">✅</span>
+    <div class="text-xs">
+      <div id="toast-title" class="font-bold">Notificación</div>
+      <div id="toast-msg" class="text-slate-300 mt-0.5">Detalle</div>
+    </div>
+  </div>
+
+  <!-- SCRIPTS DE LÓGICA DE INTERFAZ Y AUDIO WEB (BUZZER) -->
+  <script>
+    let estadoGlobal = null;
+    let audioHabilitado = true;
+    let vistaMovilActiva = false;
+    let audioCtx = null;
+    let timerCierrePluma = null;
+
+    // Síntesis del Buzzer del ESP32 (GPIO 2 LEDC) usando Web Audio API
+    function reproducirTonoBuzzer(frecuencia, duracionMs, delayMs = 0) {
+      if (!audioHabilitado) return;
+      setTimeout(() => {
+        try {
+          if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          }
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = 'square';
+          osc.frequency.setValueAtTime(frecuencia, audioCtx.currentTime);
+          gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
+          osc.start();
+          osc.stop(audioCtx.currentTime + duracionMs / 1000);
+        } catch (e) {
+          console.warn('WebAudio no iniciado:', e);
+        }
+      }, delayMs);
+    }
+
+    function toggleAudio() {
+      audioHabilitado = !audioHabilitado;
+      document.getElementById('audio-icon').textContent = audioHabilitado ? '🔊' : '🔇';
+      document.getElementById('audio-label').textContent = audioHabilitado ? 'Buzzer Web: ON' : 'Buzzer Web: OFF';
+    }
+
+    function toggleVistaMovil() {
+      vistaMovilActiva = !vistaMovilActiva;
+      const wrapper = document.getElementById('main-wrapper');
+      const label = document.getElementById('label-vista-movil');
+      if (vistaMovilActiva) {
+        wrapper.classList.add('mobile-frame', 'my-4', 'bg-slate-950');
+        label.textContent = 'Vista Escritorio';
+      } else {
+        wrapper.classList.remove('mobile-frame', 'my-4', 'bg-slate-950');
+        label.textContent = 'Vista App Móvil';
+      }
+    }
+
+    function cambiarTab(tabId) {
+      ['monitoreo', 'usuarios', 'bitacora', 'arquitectura'].forEach(t => {
+        document.getElementById(`tab-${t}`).classList.add('hidden');
+        const btn = document.getElementById(`tab-btn-${t}`);
+        btn.classList.remove('border-emerald-400', 'text-emerald-400', 'font-semibold');
+        btn.classList.add('border-transparent', 'text-slate-400');
+      });
+      document.getElementById(`tab-${tabId}`).classList.remove('hidden');
+      const activeBtn = document.getElementById(`tab-btn-${tabId}`);
+      activeBtn.classList.add('border-emerald-400', 'text-emerald-400', 'font-semibold');
+      activeBtn.classList.remove('border-transparent', 'text-slate-400');
+    }
+
+    function mostrarToast(titulo, mensaje, icono = '✅') {
+      const toast = document.getElementById('toast-notification');
+      document.getElementById('toast-title').textContent = titulo;
+      document.getElementById('toast-msg').textContent = mensaje;
+      document.getElementById('toast-icon').textContent = icono;
+      toast.classList.remove('hidden');
+      setTimeout(() => toast.classList.add('hidden'), 4200);
+    }
+
+    function agregarLineaSerial(texto, claseColor = 'text-emerald-400') {
+      const consola = document.getElementById('serial-console');
+      const div = document.createElement('div');
+      const hora = new Date().toLocaleTimeString();
+      div.className = claseColor;
+      div.textContent = `[${hora}] ${texto}`;
+      consola.appendChild(div);
+      consola.scrollTop = consola.scrollHeight;
+    }
+
+    function limpiarConsolaSerial() {
+      document.getElementById('serial-console').innerHTML = '';
+      agregarLineaSerial('Monitor Serial reiniciado (115200 baudios)...', 'text-slate-400');
+    }
+
+    // Cargar estado completo desde FastAPI
+    async function cargarDashboard() {
+      try {
+        const res = await fetch('/api/dashboard');
+        const data = await res.json();
+        estadoGlobal = data;
+        renderizarDashboard(data);
+      } catch (err) {
+        console.error('Error al sincronizar dashboard:', err);
+      }
+    }
+
+    function renderizarDashboard(data) {
+      const { aforo, hardware, cajones, registros, bitacora, estadisticas } = data;
+
+      // 1. KPIs Superiores
+      document.getElementById('kpi-libres').textContent = aforo.lugares_libres;
+      document.getElementById('kpi-total').textContent = aforo.capacidad_total;
+      const pctLibre = 100 - aforo.porcentaje_ocupacion;
+      document.getElementById('kpi-porcentaje').textContent = `${pctLibre}% Libre`;
+
+      const cajonEl = document.getElementById('kpi-cajon-estado');
+      if (aforo.cajon_prototipo_ocupado) {
+        cajonEl.textContent = 'OCUPADO';
+        cajonEl.className = 'text-xl sm:text-2xl font-bold text-amber-400';
+      } else {
+        cajonEl.textContent = 'LIBRE';
+        cajonEl.className = 'text-xl sm:text-2xl font-bold text-emerald-400';
+      }
+      document.getElementById('kpi-distancia').textContent = `${aforo.distancia_ultrasonico_cm} cm`;
+
+      const plumaEl = document.getElementById('kpi-pluma-estado');
+      if (hardware.pluma_estado === 'ABIERTA') {
+        plumaEl.textContent = 'ABIERTA';
+        plumaEl.className = 'text-xl sm:text-2xl font-bold text-emerald-400';
+      } else {
+        plumaEl.textContent = 'CERRADA';
+        plumaEl.className = 'text-xl sm:text-2xl font-bold text-rose-400';
+      }
+      document.getElementById('kpi-pluma-angulo').textContent = `${hardware.pluma_angulo}°`;
+      document.getElementById('kpi-credenciales').textContent = estadisticas.credenciales_activas;
+      document.getElementById('kpi-eventos-total').textContent = `${estadisticas.total_eventos} eventos`;
+
+      // 2. Display LCD 16x2 I2C
+      document.getElementById('lcd-line-1').textContent = (hardware.lcd_linea1 || 'Lugar: LIBRE').padEnd(16, ' ');
+      document.getElementById('lcd-line-2').textContent = (hardware.lcd_linea2 || 'Acerque tarjeta').padEnd(16, ' ');
+
+      // 3. LEDs y Servo SG90
+      const ledVerde = document.getElementById('hw-led-verde');
+      const ledRojo = document.getElementById('hw-led-rojo');
+      ledVerde.className = hardware.led_verde
+        ? 'w-7 h-7 rounded-full led-green-on border-2 border-white transition-all'
+        : 'w-7 h-7 rounded-full bg-emerald-950 border-2 border-emerald-700/50 transition-all';
+      ledRojo.className = hardware.led_rojo
+        ? 'w-7 h-7 rounded-full led-red-on border-2 border-white transition-all'
+        : 'w-7 h-7 rounded-full bg-rose-950 border-2 border-rose-700/50 transition-all';
+
+      const gateArm = document.getElementById('gate-arm-el');
+      const servoBadge = document.getElementById('servo-badge');
+      if (hardware.pluma_estado === 'ABIERTA') {
+        gateArm.classList.remove('gate-closed');
+        gateArm.classList.add('gate-open');
+        servoBadge.textContent = '90° ABIERTA';
+        servoBadge.className = 'px-2 py-0.5 rounded text-[11px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+      } else {
+        gateArm.classList.remove('gate-open');
+        gateArm.classList.add('gate-closed');
+        servoBadge.textContent = '0° CERRADA';
+        servoBadge.className = 'px-2 py-0.5 rounded text-[11px] font-mono bg-rose-500/20 text-rose-300 border border-rose-500/30';
+      }
+
+      // 4. Slider HC-SR04
+      const slider = document.getElementById('slider-hc-sr04');
+      if (document.activeElement !== slider) {
+        slider.value = hardware.distancia_cm;
+        document.getElementById('slider-distancia-val').textContent = `${hardware.distancia_cm} cm`;
+      }
+
+      // 5. Mapa de Cajones
+      const gridCajones = document.getElementById('grid-cajones');
+      gridCajones.innerHTML = cajones.map(c => {
+        const ocupado = c.estado === 'OCUPADO';
+        return `
+          <div onclick="conmutarCajon('${c.codigo}')" class="cursor-pointer rounded-xl p-3 border transition transform hover:-translate-y-0.5 ${
+            ocupado
+              ? 'bg-rose-950/30 border-rose-500/40 hover:border-rose-400'
+              : 'bg-emerald-950/30 border-emerald-500/40 hover:border-emerald-400'
+          }">
+            <div class="flex items-center justify-between mb-1">
+              <span class="font-bold text-sm text-white">${c.codigo}</span>
+              <span class="px-2 py-0.5 rounded text-[10px] font-bold ${
+                ocupado ? 'bg-rose-500/20 text-rose-300' : 'bg-emerald-500/20 text-emerald-300'
+              }">${c.estado}</span>
+            </div>
+            <div class="text-[11px] text-slate-400 truncate">${c.zona}</div>
+            <div class="mt-2 flex items-center justify-between text-[11px] font-mono">
+              <span class="text-slate-300">${ocupado ? '🚗 ' + (c.vehiculo_actual_placas || 'Vehículo') : '🟢 Disponible'}</span>
+              <span class="text-sky-400">${c.distancia_cm} cm</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      // 6. Botones de Tarjetas Rápidas para el Simulador RC522
+      const contTarjetas = document.getElementById('botones-tarjetas-rapidas');
+      const tarjetasHtml = registros.map(r => {
+        const activa = r.estado_credencial === 'ACTIVA';
+        return `
+          <button onclick="simularAcceso('${r.uid}', 'RFID_RC522')" class="w-full text-left p-2.5 rounded-xl bg-slate-950 hover:bg-slate-800 border ${
+            activa ? 'border-slate-800 hover:border-emerald-500/50' : 'border-rose-900/50 opacity-75'
+          } flex items-center justify-between transition">
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="font-mono font-bold text-xs text-indigo-300">${r.uid}</span>
+                <span class="text-xs font-semibold text-white">${r.usuario_nombre}</span>
+              </div>
+              <div class="text-[11px] text-slate-400">
+                🚗 ${r.placas || '-'} • ${r.marca || ''} ${r.modelo || ''}
+              </div>
+            </div>
+            <span class="px-2 py-0.5 rounded text-[10px] font-semibold ${
+              activa ? 'bg-emerald-500/15 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+            }">
+              ${activa ? 'Acercar Tag' : 'BLOQUEADA'}
+            </span>
+          </button>
+        `;
+      }).join('');
+
+      const tarjetaIntrusoHtml = `
+        <button onclick="simularAcceso('FF 99 A2 04', 'RFID_RC522')" class="w-full text-left p-2.5 rounded-xl bg-rose-950/20 hover:bg-rose-950/40 border border-rose-500/30 flex items-center justify-between transition">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="font-mono font-bold text-xs text-rose-400">FF 99 A2 04</span>
+              <span class="text-xs font-semibold text-rose-200">Tarjeta Externa No Registrada</span>
+            </div>
+            <div class="text-[11px] text-rose-300/70">Simula intento de acceso con credencial desconocida</div>
+          </div>
+          <span class="px-2 py-0.5 rounded text-[10px] font-semibold bg-rose-500/20 text-rose-300">Probar Rechazo</span>
+        </button>
+      `;
+      contTarjetas.innerHTML = tarjetasHtml + tarjetaIntrusoHtml;
+
+      // 7. Tabla de Usuarios y Credenciales
+      renderizarTablaUsuarios(registros);
+
+      // 8. Tabla de Bitácora y Estadísticas
+      document.getElementById('stat-total').textContent = estadisticas.total_eventos;
+      document.getElementById('stat-autorizados').textContent = estadisticas.accesos_autorizados;
+      document.getElementById('stat-ocupado').textContent = estadisticas.rechazos_ocupado;
+      document.getElementById('stat-rechazos-uid').textContent = estadisticas.rechazos_uid;
+
+      const bitacoraBody = document.getElementById('tabla-bitacora-body');
+      bitacoraBody.innerHTML = bitacora.map(b => {
+        let badge = '';
+        if (b.tipo_evento === 'SALIDA') {
+          badge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30">🚗 SALIDA</span>`;
+        } else if (b.acceso_concedido) {
+          badge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">✅ CONCEDIDO</span>`;
+        } else if (b.tipo_evento === 'RECHAZO_LUGAR_OCUPADO') {
+          badge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">⚠️ CAJÓN OCUPADO</span>`;
+        } else {
+          badge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">⛔ DENEGADO</span>`;
+        }
+        return `
+          <tr class="hover:bg-slate-800/40">
+            <td class="py-2.5 px-3 font-mono text-slate-300 whitespace-nowrap">${b.timestamp}</td>
+            <td class="py-2.5 px-3 font-mono font-bold text-indigo-300 whitespace-nowrap">${b.uid_leido}</td>
+            <td class="py-2.5 px-3">
+              <div class="font-semibold text-white">${b.usuario_nombre}</div>
+              <div class="text-[11px] text-slate-400">${b.rol_usuario || ''}</div>
+            </td>
+            <td class="py-2.5 px-3">
+              <span class="font-mono text-emerald-300 font-semibold">${b.vehiculo_placas}</span>
+              <div class="text-[11px] text-slate-400">${b.vehiculo_descripcion}</div>
+            </td>
+            <td class="py-2.5 px-3 font-mono text-sky-400">${b.distancia_sensor_cm} cm</td>
+            <td class="py-2.5 px-3 whitespace-nowrap">${badge}</td>
+            <td class="py-2.5 px-3 text-slate-300">${b.motivo}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderizarTablaUsuarios(registros) {
+      const filtro = (document.getElementById('buscador-usuarios')?.value || '').toLowerCase();
+      const filtrados = registros.filter(r =>
+        r.usuario_nombre.toLowerCase().includes(filtro) ||
+        r.uid.toLowerCase().includes(filtro) ||
+        (r.placas || '').toLowerCase().includes(filtro)
+      );
+
+      const tbody = document.getElementById('tabla-usuarios-body');
+      tbody.innerHTML = filtrados.map(r => {
+        const activa = r.estado_credencial === 'ACTIVA';
+        return `
+          <tr class="hover:bg-slate-800/40">
+            <td class="py-3 px-3">
+              <div class="font-mono font-bold text-indigo-300">${r.uid}</div>
+              <div class="text-[11px] text-slate-500">${r.alias_tag}</div>
+            </td>
+            <td class="py-3 px-3">
+              <div class="font-semibold text-white">${r.usuario_nombre}</div>
+              <div class="text-[11px] text-slate-400">${r.rol} • ${r.departamento}</div>
+            </td>
+            <td class="py-3 px-3">
+              <span class="px-2 py-0.5 rounded bg-slate-800 font-mono font-bold text-emerald-300">${r.placas || 'SIN PLACA'}</span>
+              <div class="text-[11px] text-slate-400 mt-0.5">${r.marca || ''} ${r.modelo || ''} (${r.color || ''})</div>
+            </td>
+            <td class="py-3 px-3">
+              <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                activa
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+              }">${r.estado_credencial}</span>
+            </td>
+            <td class="py-3 px-3 text-right space-x-1 whitespace-nowrap">
+              <button onclick="simularAcceso('${r.uid}', 'RFID_RC522')" class="px-2.5 py-1 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 text-[11px] font-semibold">
+                Probar Tag
+              </button>
+              <button onclick="cambiarEstadoCredencial(${r.credencial_id}, '${activa ? 'BLOQUEADA' : 'ACTIVA'}')" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px]">
+                ${activa ? 'Bloquear' : 'Activar'}
+              </button>
+              <button onclick="eliminarCredencial(${r.credencial_id})" class="px-2.5 py-1 rounded-lg bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 text-[11px]">
+                Eliminar
+              </button>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function filtrarTablaUsuarios() {
+      if (estadoGlobal) {
+        renderizarTablaUsuarios(estadoGlobal.registros);
+      }
+    }
+
+    // Simular lectura de tarjeta RFID o comando Serial ('1'/'0')
+    async function simularAcceso(uid, origen = 'RFID_RC522') {
+      const distActual = parseFloat(document.getElementById('slider-hc-sr04').value);
+      agregarLineaSerial(`UID/Comando recibido: ${uid} | HC-SR04: ${distActual} cm`, 'text-sky-400');
+
+      try {
+        const res = await fetch('/api/esp32/validar-acceso', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            uid: uid,
+            distancia_cm: distActual,
+            origen: origen
+          })
+        });
+        const resultado = await res.json();
+
+        // Reproducir los tonos reales del Buzzer del ESP32
+        if (resultado.buzzer_tonos && resultado.buzzer_tonos.length > 0) {
+          let delayAcumulado = 0;
+          resultado.buzzer_tonos.forEach(t => {
+            reproducirTonoBuzzer(t.freq, t.ms, delayAcumulado);
+            delayAcumulado += t.ms + 100;
+          });
+        }
+
+        if (resultado.acceso_concedido) {
+          agregarLineaSerial(`ACCESO CONCEDIDO a ${resultado.usuario} (${resultado.placas}): Abriendo pluma a 90°...`, 'text-emerald-400');
+          mostrarToast('Acceso Concedido (Pluma 90°)', `${resultado.usuario} • Vehículo: ${resultado.placas}`, '🟢');
+
+          // Simular el ciclo automático de 3 segundos del ESP32 antes de bajar la pluma a 0°
+          if (timerCierrePluma) clearTimeout(timerCierrePluma);
+          timerCierrePluma = setTimeout(async () => {
+            agregarLineaSerial('Cerrando pluma (0°)... Sistema listo para otra tarjeta.', 'text-slate-300');
+            await fetch('/api/hardware/pluma', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ accion: 'CERRAR', motivo: 'Cierre automático tras 3 segundos' })
+            });
+            await cargarDashboard();
+          }, 3000);
+        } else if (resultado.codigo_respuesta === 'DENEGADO_LUGAR_OCUPADO') {
+          agregarLineaSerial('ACCESO DENEGADO: Lugar actualmente ocupado (HC-SR04 <= 10 cm).', 'text-amber-400');
+          mostrarToast('Lugar Ocupado - Espere por favor', resultado.motivo, '⚠️');
+          setTimeout(() => controlarPlumaManual('CERRAR', true), 2200);
+        } else {
+          agregarLineaSerial('ACCESO DENEGADO: Credencial no autorizada. Pluma bloqueada.', 'text-rose-400');
+          mostrarToast('Acceso Denegado (No Autorizado)', resultado.motivo, '⛔');
+          setTimeout(() => controlarPlumaManual('CERRAR', true), 1800);
+        }
+
+        await cargarDashboard();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function probarUidManual() {
+      const input = document.getElementById('input-uid-manual');
+      const val = input.value.trim();
+      if (!val) return;
+      simularAcceso(val, 'SIMULADOR_ESP32');
+      input.value = '';
+    }
+
+    function actualizarPreviewSlider(val) {
+      document.getElementById('slider-distancia-val').textContent = `${parseFloat(val).toFixed(1)} cm`;
+    }
+
+    async function enviarTelemetriaSimulada(distanciaCm) {
+      const dist = parseFloat(distanciaCm);
+      await fetch('/api/esp32/telemetria', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ distancia_cm: dist })
+      });
+      const estadoTxt = dist <= 10.0 ? 'OCUPADO (<= 10 cm)' : 'LIBRE (> 10 cm)';
+      agregarLineaSerial(`[HC-SR04] Distancia medida: ${dist.toFixed(1)} cm -> Cajón ${estadoTxt}`, 'text-slate-300');
+      await cargarDashboard();
+    }
+
+    function setDistanciaRapida(dist) {
+      document.getElementById('slider-hc-sr04').value = dist;
+      actualizarPreviewSlider(dist);
+      enviarTelemetriaSimulada(dist);
+    }
+
+    async function controlarPlumaManual(accion, silencioso = false) {
+      await fetch('/api/hardware/pluma', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accion })
+      });
+      if (!silencioso) {
+        agregarLineaSerial(`[SERVO SG90] Pluma posicionada manualmente: ${accion === 'ABRIR' ? '90° ABIERTA' : '0° CERRADA'}`, 'text-amber-300');
+      }
+      await cargarDashboard();
+    }
+
+    async function conmutarCajon(codigo) {
+      await fetch(`/api/cajones/${codigo}/actualizar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      await cargarDashboard();
+    }
+
+    function generarUidAleatorio() {
+      const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0').toUpperCase();
+      document.getElementById('reg-uid').value = `${hex()} ${hex()} ${hex()} ${hex()}`;
+    }
+
+    async function guardarNuevoRegistro(e) {
+      e.preventDefault();
+      const payload = {
+        nombre: document.getElementById('reg-nombre').value,
+        rol: document.getElementById('reg-rol').value,
+        departamento: document.getElementById('reg-depto').value,
+        correo: document.getElementById('reg-correo').value,
+        telefono: document.getElementById('reg-telefono').value,
+        placas: document.getElementById('reg-placas').value,
+        marca: document.getElementById('reg-marca').value,
+        modelo: document.getElementById('reg-modelo').value,
+        color: document.getElementById('reg-color').value,
+        uid_rfid: document.getElementById('reg-uid').value,
+        alias_tag: document.getElementById('reg-alias').value
+      };
+
+      const res = await fetch('/api/registro-completo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        mostrarToast('Error en el Registro', data.detail || 'No se pudo guardar', '❌');
+        return;
+      }
+
+      mostrarToast('Credencial y Vehículo Registrados', `${data.usuario} (${data.uid}) - Placas: ${data.placas}`, '✅');
+      document.getElementById('form-registro').reset();
+      document.getElementById('reg-depto').value = 'Facultad de Ingeniería';
+      document.getElementById('reg-alias').value = 'Tarjeta Blanca MIFARE 13.56MHz';
+      await cargarDashboard();
+    }
+
+    async function cambiarEstadoCredencial(id, nuevoEstado) {
+      await fetch(`/api/credenciales/${id}/estado`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ estado: nuevoEstado })
+      });
+      mostrarToast('Estado Actualizado', `La credencial ahora está ${nuevoEstado}`, '🔄');
+      await cargarDashboard();
+    }
+
+    async function eliminarCredencial(id) {
+      await fetch(`/api/credenciales/${id}`, { method: 'DELETE' });
+      mostrarToast('Registro Eliminado', 'Se eliminó la credencial y vehículo asociado', '🗑️');
+      await cargarDashboard();
+    }
+
+    // Inicializar y refrescar cada 1 segundo para sincronización en tiempo real con el ESP32 físico
+    cargarDashboard();
+    setInterval(cargarDashboard, 1000);
+  </script>
+</body>
+</html>
